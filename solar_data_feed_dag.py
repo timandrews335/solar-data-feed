@@ -12,6 +12,7 @@ import psycopg2                         #Need to ass this to docker
 import os
 from sqlalchemy import create_engine
 from sqlalchemy import text
+from google.cloud import bigquery
 import tempfile
 import requests
 import csv
@@ -19,6 +20,7 @@ import sys
 from datetime import date, timedelta, time, datetime
 from sys import platform
 import datetime
+from enum import Enum
 
 
 default_args = {
@@ -39,6 +41,11 @@ default_args = {
 POSTGRES_IP = os.environ['POSTGRES_SERVER']
 POSTGRES_USER = os.environ['POSTGRES_USER']
 POSTGRESS_PASSWORD = os.environ['POSTGRES_PASS']
+BQ_CLIENT = bigquery.Client()   # relies on os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+
+class DB_TYPE(Enum):
+    POSTGRES = 1
+    BIGQUERY = 2
 
 #Set up the destionation file based on OS & temp directory
 solar_csv = ""
@@ -88,7 +95,7 @@ def import_solar():
             text_file.write(download.content.decode('utf-8'))
             
             
-def process_csv_to_db(csv, db_con, table_name):
+def process_csv_to_db(csv, db_con, db_type, table_name):
 
     #For the solar api energy, we want to get a rolling 30 days
     today = date.today()
@@ -103,32 +110,70 @@ def process_csv_to_db(csv, db_con, table_name):
     start_date_energy_string = start_date_energy.strftime("%Y-%m-%d")
     start_date_power_string = start_date_power.strftime("%Y-%m-%d") + " 00:00:00"
     end_date_power_string = end_date_power.strftime("%Y-%m-%d") + " 11:59:59"
-        
-    #Save csv to database
+    
     df = pd.read_csv(csv)
-    df.to_sql(name = table_name, con = db_con, if_exists='replace', index = False)
+        
+    if(db_type == DB_TYPE.POSTGRES):
+        df.to_sql(name = table_name, con = db_con, if_exists='replace', index = False)
+    if(db_type == DB_TYPE.BIGQUERY):
+        bq_table_id = table_name
+        bq_job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+        bq_job = BQ_CLIENT.load_table_from_dataframe(df, bq_table_id, job_config=bq_job_config)
+        bq_job.result()
+        
+def run_sql_against_db(db_con, db_type, sql):
 
-def process_csv_to_db_postgres():
+    if(db_type == DB_TYPE.POSTGRES):
+        cur = db_con.cursor()
+        cur.execute(sql)
+        db_con.commit()
+    if (db_type == DB_TYPE.BIGQUERY):
+        BQ_CLIENT.query(sql)
+
+def process_solar_csv_to_db_postgres():
     connection_string = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
     engine = create_engine(connection_string)
         
-    process_csv_to_db(solar_csv_energy, engine, 'raw_solar_energy')
-    process_csv_to_db(solar_csv_power, engine, 'raw_solar_power')
+    process_csv_to_db(solar_csv_energy, engine, DB_TYPE.POSTGRES, 'raw_solar_energy')
+    process_csv_to_db(solar_csv_power, engine, DB_TYPE.POSTGRES, 'raw_solar_power')
+    
+def process_solar_csv_to_db_bigquery():
+    process_csv_to_db(solar_csv_energy, None, DB_TYPE.BIGQUERY, 'solar.raw_solar_energy')
+    process_csv_to_db(solar_csv_power, None, DB_TYPE.BIGQUERY, 'solar.raw_solar_power')
+    
+def upsert_target_solar_postgres():
+    conn = psycopg2.connect("user='" + POSTGRES_USER + "' host='" + POSTGRES_IP + "' password='" + POSTGRESS_PASSWORD + "'")
+    run_sql_against_db(conn,DB_TYPE.POSTGRES, 'INSERT INTO solar_values ("date", "value") select "date"::timestamp, "value" from raw_solar_energy ON CONFLICT("date") DO UPDATE SET "value" = excluded."value";')
+
+def insert_target_solar_bigquery():
+    sql = """
+    insert into solar.solar_production
+    select cast(`date` as datetime) as production_time, value as production, current_timestamp() as time_inserted 
+    from solar.raw_solar_energy
+    where value is not null
+    and cast(`date` as datetime) >= (select datetime_add(max(production_time), interval -4 HOUR) from solar.solar_production)
+    ;
+    """
+    run_sql_against_db(None,DB_TYPE.BIGQUERY, sql)
 
 dag_solar_data_feed = DAG(
         dag_id = "solar_data_feed",
         default_args=default_args,
-        # schedule_interval='0 0 * * *',
-        schedule_interval='@once',
+        schedule_interval='25 * * * *',
+        #schedule_interval='@once',
         dagrun_timeout=timedelta(minutes=60),
         description='imports solar panel power generation, weather information, and stores it locally and in the cloud for a predictive model.',
         start_date = airflow.utils.dates.days_ago(1))
 
 task_dummy = DummyOperator(task_id='dummy_task', retries=3, dag=dag_solar_data_feed)
 task_import_solar = PythonOperator(task_id='task_import_solar', python_callable=import_solar, dag=dag_solar_data_feed)
-task_solar_to_postgres = PythonOperator(task_id='task_solar_to_postgres', python_callable=process_csv_to_db_postgres, dag=dag_solar_data_feed)
+task_solar_to_postgres = PythonOperator(task_id='task_solar_to_postgres', python_callable=process_solar_csv_to_db_postgres, dag=dag_solar_data_feed)
+task_solar_to_bigquery = PythonOperator(task_id='task_solar_to_bigquery', python_callable=process_solar_csv_to_db_bigquery, dag=dag_solar_data_feed)
+task_upsert_solar_postgres_target =  PythonOperator(task_id='task_upsert_solar_postgres_target', python_callable=upsert_target_solar_postgres, dag=dag_solar_data_feed)
+task_insert_solar_bigquery_target = PythonOperator(task_id='task_insert_solar_bigquery_target', python_callable=insert_target_solar_bigquery, dag=dag_solar_data_feed)
 
-task_dummy >> task_import_solar >> task_solar_to_postgres
+task_dummy >> task_import_solar >> task_solar_to_postgres >> task_upsert_solar_postgres_target
+task_import_solar >> task_solar_to_bigquery >> task_insert_solar_bigquery_target
 
 if __name__ == "__main__":
         dag_python.cli()
