@@ -8,7 +8,7 @@ from airflow.utils.dates import days_ago
 
 import pandas as pd
 import pymssql
-import psycopg2                         #Need to ass this to docker
+import psycopg2                         
 import os
 from sqlalchemy import create_engine
 from sqlalchemy import text
@@ -49,7 +49,7 @@ class DB_TYPE(Enum):
     POSTGRES = 1
     BIGQUERY = 2
 
-#Set up the destionation file based on OS & temp directory
+#Set up the destionation files based on OS & temp directory
 solar_csv = ""
 solar_csv_power = ""
 fiveday_csv = ""
@@ -69,6 +69,10 @@ elif platform == "win32":
     solar_csv_power = tempfile.gettempdir() + "\\solar_power.csv"
     fiveday_csv = tempfile.gettempdir() + "\\accuweather_five_day.csv"
     openweather_csv = tempfile.gettempdir() + "\\openweather.csv"
+    
+#Connections to target DBs 
+POSTGRES_CONNECTION_STRING = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
+POSTGRES_ENGINE = create_engine(POSTGRES_CONNECTION_STRING)
 
 
 def import_solar():
@@ -190,21 +194,6 @@ def import_openweather():
                 
             
 def process_csv_to_db(csv, db_con, db_type, table_name):
-
-    #For the solar api energy, we want to get a rolling 30 days
-    today = date.today()
-    start_date_energy = today + timedelta(days=-30)
-
-    #For the solar api power, we want to get a rolling 26 days
-    start_date_power = today + timedelta(days=-26)
-    end_date_power = today + timedelta(days=+1)
-
-    #Format our dates as strings to pass to the URL
-    today_string = today.strftime("%Y-%m-%d")
-    start_date_energy_string = start_date_energy.strftime("%Y-%m-%d")
-    start_date_power_string = start_date_power.strftime("%Y-%m-%d") + " 00:00:00"
-    end_date_power_string = end_date_power.strftime("%Y-%m-%d") + " 11:59:59"
-    
     df = pd.read_csv(csv)
         
     if(db_type == DB_TYPE.POSTGRES):
@@ -224,33 +213,29 @@ def run_sql_against_db(db_con, db_type, sql):
     if (db_type == DB_TYPE.BIGQUERY):
         BQ_CLIENT.query(sql)
 
+#****************************************************************
+#****************************************************************
+#*****************Methods that are use as dag tasks**************
+#****************************************************************
+#****************************************************************
 def process_solar_csv_to_db_postgres():
-    connection_string = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
-    engine = create_engine(connection_string)
-        
-    process_csv_to_db(solar_csv_energy, engine, DB_TYPE.POSTGRES, 'raw_solar_energy')
-    process_csv_to_db(solar_csv_power, engine, DB_TYPE.POSTGRES, 'raw_solar_power')
+    process_csv_to_db(solar_csv_energy, POSTGRES_ENGINE, DB_TYPE.POSTGRES, 'raw_solar_energy')
+    process_csv_to_db(solar_csv_power, POSTGRES_ENGINE, DB_TYPE.POSTGRES, 'raw_solar_power')
     
 def process_solar_csv_to_db_bigquery():
     process_csv_to_db(solar_csv_energy, None, DB_TYPE.BIGQUERY, 'solar.raw_solar_energy')
     process_csv_to_db(solar_csv_power, None, DB_TYPE.BIGQUERY, 'solar.raw_solar_power')
     
 def process_five_day_csv_to_db_postgres():
-    connection_string = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
-    engine = create_engine(connection_string)
-    process_csv_to_db(fiveday_csv, engine, DB_TYPE.POSTGRES, 'raw_five_day')
+    process_csv_to_db(fiveday_csv, POSTGRES_ENGINE, DB_TYPE.POSTGRES, 'raw_five_day')
     
 def process_five_day_csv_to_db_bigquery():
     process_csv_to_db(fiveday_csv, None, DB_TYPE.BIGQUERY, 'solar.raw_five_day')
     
 def process_openweather_csv_to_db_postgres():
-    connection_string = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
-    engine = create_engine(connection_string)
-    process_csv_to_db(openweather_csv, engine, DB_TYPE.POSTGRES, 'raw_openweather')
+    process_csv_to_db(openweather_csv, POSTGRES_ENGINE, DB_TYPE.POSTGRES, 'raw_openweather')
     
 def process_openweather_csv_to_db_bigquery():
-    connection_string = "postgresql+psycopg2://" + POSTGRES_USER + ":" + POSTGRESS_PASSWORD + "@" + POSTGRES_IP + "/solar"
-    engine = create_engine(connection_string)
     process_csv_to_db(openweather_csv, None, DB_TYPE.BIGQUERY, 'solar.raw_openweather')
     
 def upsert_target_solar_postgres():
@@ -443,7 +428,7 @@ task_upsert_solar_postgres_target =  PythonOperator(task_id='task_upsert_solar_p
 task_insert_solar_bigquery_target = PythonOperator(task_id='task_insert_solar_bigquery_target', python_callable=insert_target_solar_bigquery, dag=dag_solar_data_feed)
 
 task_upsert_five_day_postgres_target =  PythonOperator(task_id='task_upsert_five_day_postgres_target', python_callable=upsert_target_five_day_postgres, dag=dag_solar_data_feed)
-task_insert_five_day_bigquery_target = PythonOperator(task_id='task_insert_five_day_bigquery_target', python_callable=insert_target_five_day_bigquery, dag=dag_solar_data_feed)
+task_insert_five_day_bigquery_target = PythonOperator(task_id='task_insert_five_day_bigquery_target', python_callable=insert_target_five_day_bigqueryg, dag=dag_solar_data_feed)
 
 task_insert_openweather_postgres_target =  PythonOperator(task_id='task_insert_openweather_postgres_target', python_callable=insert_target_openweather_postgres, dag=dag_solar_data_feed)
 task_insert_openweather_bigquery_target = PythonOperator(task_id='task_insert_openweather_bigquery_target', python_callable=insert_target_openweather_bigquery, dag=dag_solar_data_feed)
