@@ -290,8 +290,8 @@ def insert_target_five_day_bigquery():
     , max_temp 
     , day_phrase
     , day_precip 
-    , coalesce(day_precip_type, '') as day_precip_type
-    , coalesce(day_precip_intensity, '') as  day_precip_intensity
+    , coalesce(cast(day_precip_type as string), '') as day_precip_type
+    , coalesce(cast(day_precip_intensity as string), '') as  day_precip_intensity
     from solar.raw_five_day
     ;
     """
@@ -429,7 +429,7 @@ task_upsert_solar_postgres_target =  PythonOperator(task_id='task_upsert_solar_p
 task_insert_solar_bigquery_target = PythonOperator(task_id='task_insert_solar_bigquery_target', python_callable=insert_target_solar_bigquery, dag=dag_solar_data_feed)
 
 task_upsert_five_day_postgres_target =  PythonOperator(task_id='task_upsert_five_day_postgres_target', python_callable=upsert_target_five_day_postgres, dag=dag_solar_data_feed)
-task_insert_five_day_bigquery_target = PythonOperator(task_id='task_insert_five_day_bigquery_target', python_callable=insert_target_five_day_bigqueryg, dag=dag_solar_data_feed)
+task_insert_five_day_bigquery_target = PythonOperator(task_id='task_insert_five_day_bigquery_target', python_callable=insert_target_five_day_bigquery, dag=dag_solar_data_feed)
 
 task_insert_openweather_postgres_target =  PythonOperator(task_id='task_insert_openweather_postgres_target', python_callable=insert_target_openweather_postgres, dag=dag_solar_data_feed)
 task_insert_openweather_bigquery_target = PythonOperator(task_id='task_insert_openweather_bigquery_target', python_callable=insert_target_openweather_bigquery, dag=dag_solar_data_feed)
