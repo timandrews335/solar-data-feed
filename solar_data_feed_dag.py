@@ -397,6 +397,7 @@ join (
 		x.the_date) d on
 	c.the_date = d.the_date
 	and c.time_recorded = d.max_time
+    where c.time_recorded not in (select time_recorded from solar.combined_weather)
 ;
     """
     run_sql_against_db(None,DB_TYPE.BIGQUERY, sql)
